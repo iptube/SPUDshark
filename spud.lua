@@ -34,7 +34,133 @@ local pf_pdec = ProtoField.new("Application Declaration",
                                base.DEC,
                                0x10)
 
-spud.fields = { pf_magic, pf_tube, pf_command, pf_adec, pf_pdec }
+local pf_resv = ProtoField.new("Reserved",
+                               "spud.resv",
+                               ftypes.UINT8,
+                               nil,
+                               base.HEX,
+                               0x08)
+
+local pf_cbor_mt = ProtoField.new("CBOR Major Type",
+                                  "spud.cbor_mt",
+                                  ftypes.UINT8,
+                                  nil,
+                                  base.DEC,
+                                  0xe0)
+
+local pf_cbor_short_value = ProtoField.new("Value",
+                                     "spud.cbor_short",
+                                     ftypes.UINT8,
+                                     nil,
+                                     base.DEC,
+                                     0x1F)
+
+local pf_cbor_value = ProtoField.new("Value",
+                                     "spud.cbor_value",
+                                     ftypes.UINT8,
+                                     nil,
+                                     base.DEC)
+
+local pf_cbor_bytes = ProtoField.new("Bytes",
+                                     "spud.cbor_bytes",
+                                     ftypes.STRING)
+
+local pf_cbor_str = ProtoField.new("String",
+                                   "spud.cbor_str",
+                                   ftypes.STRING)
+
+local pf_cbor_tag = ProtoField.new("Tag",
+                                     "spud.cbor_tag",
+                                     ftypes.UINT8,
+                                     nil,
+                                     base.DEC)
+
+spud.fields = { pf_magic, pf_tube, pf_command, pf_adec, pf_pdec, pf_resv,
+                pf_cbor_mt, pf_cbor_short_value, pf_cbor_value, pf_cbor_bytes,
+                pf_cbor_str, pf_cbor_tag }
+
+local cbor_major_types = {
+  "+int", "-int", "bstr", "utf8", "array", "map", "tag", "simple"
+}
+
+function cbor(tvbuf,tree)
+  -- stupid simple CBOR parser
+  local typ = tvbuf:range(0,1)
+  local typn = bit32.rshift(bit32.band(typ:uint(), 0xe0), 5)
+  local val = bit32.band(typ:uint(), 0x1f)
+  local count = 1
+  local item = tree:add(pf_cbor_mt, typ):append_text(" "):append_text(cbor_major_types[typn+1])
+  local valitem = nil
+  if (val < 24) then
+    valitem = item:add(pf_cbor_short_value, typ)
+  elseif (val == 24) then
+    local valr = tvbuf:range(1,1)
+    valitem = item:add(pf_cbor_value, valr)
+    val = valr:uint()
+    count = count+1
+  elseif (val == 25) then
+    local valr = tvbuf:range(1,2)
+    valitem = item:add(pf_cbor_value, valr)
+    val = valr:uint()
+    count = count+2
+  elseif (val == 26) then
+    local valr = tvbuf:range(1,4)
+    valitem = item:add(pf_cbor_value, valr)
+    val = valr:uint()
+    count = count+4
+  elseif (val == 27) then
+    local valr = tvbuf:range(1,8)
+    valitem = item:add(pf_cbor_value, valr)
+    val = valr:uint64()
+    count = count+8
+  end
+
+  if typn == 2 then
+    -- bstr
+    valitem:append_text(" (byte length)")
+    item:add(pf_cbor_bytes, tvbuf:range(count, val))
+  elseif typn == 3 then
+    -- utf8
+    valitem:append_text(" (byte length)")
+    item:add(pf_cbor_str, tvbuf:range(count, val))
+  elseif typn == 4 then
+    -- array
+    if val == 1 then
+      valitem:append_text(" item")
+    else
+      valitem:append_text(" items")
+    end
+
+    for i = 1, val do
+      count = count + cbor(tvbuf:range(count, tvbuf:len()-count), item)
+    end
+  elseif typn == 5 then
+    -- map
+    if val == 1 then
+      valitem:append_text(" key")
+    else
+      valitem:append_text(" keys")
+    end
+
+    for i = 1, val do
+      count = count + cbor(tvbuf:range(count, tvbuf:len()-count), item)
+      count = count + cbor(tvbuf:range(count, tvbuf:len()-count), item)
+    end
+  elseif typn == 6 then
+    count = count + cbor(tvbuf:range(count, tvbuf:len()-count), item)
+  elseif typn == 7 then
+    if val == 20 then
+      valitem:append_text(" False")
+    elseif val == 21 then
+      valitem:append_text(" True")
+    elseif val == 22 then
+      valitem:append_text(" Null")
+    elseif val == 23 then
+      valitem:append_text(" Undefined")
+    end
+  end
+  return count
+end
 
 function spud.dissector(tvbuf,pktinfo,root)
     pktinfo.cols.protocol:set("SPUD")
@@ -64,8 +190,13 @@ function spud.dissector(tvbuf,pktinfo,root)
     tree:add(pf_command, flags):append_text(" "):append_text(cmd_str)
     tree:add(pf_adec, flags)
     tree:add(pf_pdec, flags)
+    tree:add(pf_resv, flags)
+    local count = SPUD_HDR_LEN
+    if pktlen > SPUD_HDR_LEN then
+      count = count + cbor(tvbuf:range(SPUD_HDR_LEN,pktlen-SPUD_HDR_LEN), tree)
+    end
 
-    return SPUD_HDR_LEN
+    return count
 end
 
 local function heur_dissect_spud(tvbuf,pktinfo,root)
