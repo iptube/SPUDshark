@@ -27,7 +27,7 @@ local pf_adec = ProtoField.new("Application Declaration",
                                base.DEC,
                                0x20)
 
-local pf_pdec = ProtoField.new("Application Declaration",
+local pf_pdec = ProtoField.new("Path Declaration",
                                "spud.pdec",
                                ftypes.BOOLEAN,
                                nil,
@@ -137,9 +137,9 @@ function cbor(tvbuf,tree)
   elseif typn == 5 then
     -- map
     if val == 1 then
-      valitem:append_text(" key")
+      valitem:append_text(" key/value pair")
     else
-      valitem:append_text(" keys")
+      valitem:append_text(" key/value pairs")
     end
 
     for i = 1, val do
